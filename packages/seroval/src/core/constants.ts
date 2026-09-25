@@ -182,16 +182,6 @@ export const enum ErrorConstructorTag {
   URIError = 6,
 }
 
-export const ERROR_CONSTRUCTOR_STRING: Record<ErrorConstructorTag, string> = {
-  [ErrorConstructorTag.Error]: 'Error',
-  [ErrorConstructorTag.EvalError]: 'EvalError',
-  [ErrorConstructorTag.RangeError]: 'RangeError',
-  [ErrorConstructorTag.ReferenceError]: 'ReferenceError',
-  [ErrorConstructorTag.SyntaxError]: 'SyntaxError',
-  [ErrorConstructorTag.TypeError]: 'TypeError',
-  [ErrorConstructorTag.URIError]: 'URIError',
-};
-
 type ErrorConstructors =
   | ErrorConstructor
   | EvalErrorConstructor
@@ -211,3 +201,18 @@ export const ERROR_CONSTRUCTOR: Record<ErrorConstructorTag, ErrorConstructors> =
     [ErrorConstructorTag.TypeError]: TypeError,
     [ErrorConstructorTag.URIError]: URIError,
   };
+
+// Each constructor's own name is the identifier the serializer emits.
+function createErrorConstructorStringTable(): Record<
+  ErrorConstructorTag,
+  string
+> {
+  const result = {} as Record<ErrorConstructorTag, string>;
+  for (let i: ErrorConstructorTag = 0; i <= ErrorConstructorTag.URIError; i++) {
+    result[i] = ERROR_CONSTRUCTOR[i].name;
+  }
+  return result;
+}
+
+export const ERROR_CONSTRUCTOR_STRING =
+  /* @__PURE__ */ createErrorConstructorStringTable();
