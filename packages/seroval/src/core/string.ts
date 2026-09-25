@@ -111,12 +111,85 @@ function deserializeReplacer(str: string): string {
   }
 }
 
+const ESCAPE_SEQUENCE = /(\\\\|\\"|\\n|\\r|\\b|\\t|\\f|\\u2028|\\u2029|\\x3C)/g;
+
+// Strings `JSON.parse` decodes exactly like `ESCAPE_SEQUENCE`: only the
+// escapes both formats share, and no raw quote or control character that
+// JSON would reject. Anything else (`\x3C`, `\u2028`, unknown escapes) takes
+// the manual decoder, which leaves unknown escapes untouched where JSON
+// would decode or reject them.
+const JSON_COMPATIBLE =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: JSON rejects raw control characters.
+  /^(?:[^"\\\x00-\x1f]|\\["\\nrbtf])*$/;
+
 export function deserializeString(str: string): string {
-  if (typeof str === 'string' && !str.includes('\\')) {
+  if (typeof str !== 'string') {
+    // Preserve the TypeError the replace call raised for malformed nodes.
+    return (str as string).replace(ESCAPE_SEQUENCE, deserializeReplacer);
+  }
+  let index = str.indexOf('\\');
+  if (index === -1) {
     return str;
   }
-  return str.replace(
-    /(\\\\|\\"|\\n|\\r|\\b|\\t|\\f|\\u2028|\\u2029|\\x3C)/g,
-    deserializeReplacer,
-  );
+  if (JSON_COMPATIBLE.test(str)) {
+    return JSON.parse('"' + str + '"') as string;
+  }
+  // Same rewrite as `str.replace(ESCAPE_SEQUENCE, deserializeReplacer)`
+  // without the per-match callback, which dominates decoding time.
+  let result = '';
+  let lastPos = 0;
+  const last = str.length - 1;
+  while (index !== -1 && index < last) {
+    let replacement: string | undefined;
+    // Code units the escape spans, including the backslash.
+    let length = 2;
+    switch (str.charCodeAt(index + 1)) {
+      case 92: // \
+        replacement = '\\';
+        break;
+      case 34: // "
+        replacement = '"';
+        break;
+      case 110: // n
+        replacement = '\n';
+        break;
+      case 114: // r
+        replacement = '\r';
+        break;
+      case 98: // b
+        replacement = '\b';
+        break;
+      case 116: // t
+        replacement = '\t';
+        break;
+      case 102: // f
+        replacement = '\f';
+        break;
+      case 120: // x
+        if (str.startsWith('3C', index + 2)) {
+          replacement = '\x3C';
+          length = 4;
+        }
+        break;
+      case 117: // u
+        if (str.startsWith('2028', index + 2)) {
+          replacement = '\u2028';
+          length = 6;
+        } else if (str.startsWith('2029', index + 2)) {
+          replacement = '\u2029';
+          length = 6;
+        }
+        break;
+      default:
+        break;
+    }
+    if (replacement) {
+      result += str.slice(lastPos, index) + replacement;
+      lastPos = index + length;
+      index = str.indexOf('\\', lastPos);
+    } else {
+      index = str.indexOf('\\', index + 1);
+    }
+  }
+  return result + str.slice(lastPos);
 }
