@@ -2,10 +2,20 @@ import { NIL } from './constants';
 
 const MIN_JSON_STRINGIFY_LENGTH = 64;
 
-// JSON escapes these code units differently from Seroval's wire format.
+// Every code unit `serializeChar` rewrites. A native scan is far cheaper than
+// the character loop, and most strings (object keys above all) need no escape.
+const NEEDS_ESCAPE = /["\\\n\r\b\t\f<\u2028\u2029]/;
+
+// JSON escapes these code units differently from Seroval's wire format and
+// they cannot be patched afterwards; `<`, U+2028 and U+2029 pass through
+// `JSON.stringify` untouched, so they are rewritten on its output instead.
 const JSON_ESCAPE_DIFFERENCES =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: Match the control characters that require the existing encoder.
-  /[\x00-\x07\x0b\x0e-\x1f<\u2028\u2029\ud800-\udfff]/;
+  /[\x00-\x07\x0b\x0e-\x1f\ud800-\udfff]/;
+
+const LESS_THAN = /</g;
+const LINE_SEPARATOR = /\u2028/g;
+const PARAGRAPH_SEPARATOR = /\u2029/g;
 
 export function serializeChar(str: string): string | undefined {
   switch (str) {
@@ -40,11 +50,26 @@ export function serializeChar(str: string): string | undefined {
 // Also includes "<" to escape "</script>" and "\" to avoid invalid escapes in the output.
 // http://www.ecma-international.org/ecma-262/5.1/#sec-7.8.4
 export function serializeString(str: string): string {
+  if (!NEEDS_ESCAPE.test(str)) {
+    return str;
+  }
   if (
     str.length >= MIN_JSON_STRINGIFY_LENGTH &&
     !JSON_ESCAPE_DIFFERENCES.test(str)
   ) {
-    return JSON.stringify(str).slice(1, -1);
+    let result = JSON.stringify(str).slice(1, -1);
+    // JSON never emits these from an escape, so each one is an original
+    // character that still needs Seroval's encoding.
+    if (result.includes('<')) {
+      result = result.replace(LESS_THAN, '\\x3C');
+    }
+    if (result.includes('\u2028')) {
+      result = result.replace(LINE_SEPARATOR, '\\u2028');
+    }
+    if (result.includes('\u2029')) {
+      result = result.replace(PARAGRAPH_SEPARATOR, '\\u2029');
+    }
+    return result;
   }
   let result = '';
   let lastPos = 0;
@@ -56,12 +81,7 @@ export function serializeString(str: string): string {
       lastPos = i + 1;
     }
   }
-  if (lastPos === 0) {
-    result = str;
-  } else {
-    result += str.slice(lastPos);
-  }
-  return result;
+  return result + str.slice(lastPos);
 }
 
 function deserializeReplacer(str: string): string {
