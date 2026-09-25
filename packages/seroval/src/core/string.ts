@@ -1,9 +1,22 @@
-import { NIL } from './constants';
-
 const MIN_JSON_STRINGIFY_LENGTH = 64;
 
-// Every code unit `serializeChar` rewrites. A native scan is far cheaper than
-// the character loop, and most strings (object keys above all) need no escape.
+// Every code unit the escape loop rewrites, and its escape. Single-character
+// keys can never collide with a property of `Object.prototype`.
+const ESCAPED: Record<string, string | undefined> = {
+  '"': '\\"',
+  '\\': '\\\\',
+  '\n': '\\n',
+  '\r': '\\r',
+  '\b': '\\b',
+  '\t': '\\t',
+  '\f': '\\f',
+  '<': '\\x3C',
+  '\u2028': '\\u2028',
+  '\u2029': '\\u2029',
+};
+
+// The keys of `ESCAPED`. A native scan is far cheaper than the character
+// loop, and most strings (object keys above all) need no escape.
 const NEEDS_ESCAPE = /["\\\n\r\b\t\f<\u2028\u2029]/;
 
 // JSON escapes these code units differently from Seroval's wire format and
@@ -16,33 +29,6 @@ const JSON_ESCAPE_DIFFERENCES =
 const LESS_THAN = /</g;
 const LINE_SEPARATOR = /\u2028/g;
 const PARAGRAPH_SEPARATOR = /\u2029/g;
-
-export function serializeChar(str: string): string | undefined {
-  switch (str) {
-    case '"':
-      return '\\"';
-    case '\\':
-      return '\\\\';
-    case '\n':
-      return '\\n';
-    case '\r':
-      return '\\r';
-    case '\b':
-      return '\\b';
-    case '\t':
-      return '\\t';
-    case '\f':
-      return '\\f';
-    case '<':
-      return '\\x3C';
-    case '\u2028':
-      return '\\u2028';
-    case '\u2029':
-      return '\\u2029';
-    default:
-      return NIL;
-  }
-}
 
 // Written by https://github.com/DylanPiercey and is distributed under the MIT license.
 // Creates a JavaScript double quoted string and escapes all characters
@@ -75,7 +61,7 @@ export function serializeString(str: string): string {
   let lastPos = 0;
   let replacement: string | undefined;
   for (let i = 0, len = str.length; i < len; i++) {
-    replacement = serializeChar(str[i]);
+    replacement = ESCAPED[str[i]];
     if (replacement) {
       result += str.slice(lastPos, i) + replacement;
       lastPos = i + 1;
@@ -84,37 +70,8 @@ export function serializeString(str: string): string {
   return result + str.slice(lastPos);
 }
 
-function deserializeReplacer(str: string): string {
-  switch (str) {
-    case '\\\\':
-      return '\\';
-    case '\\"':
-      return '"';
-    case '\\n':
-      return '\n';
-    case '\\r':
-      return '\r';
-    case '\\b':
-      return '\b';
-    case '\\t':
-      return '\t';
-    case '\\f':
-      return '\f';
-    case '\\x3C':
-      return '\x3C';
-    case '\\u2028':
-      return '\u2028';
-    case '\\u2029':
-      return '\u2029';
-    default:
-      return str;
-  }
-}
-
-const ESCAPE_SEQUENCE = /(\\\\|\\"|\\n|\\r|\\b|\\t|\\f|\\u2028|\\u2029|\\x3C)/g;
-
-// Strings `JSON.parse` decodes exactly like `ESCAPE_SEQUENCE`: only the
-// escapes both formats share, and no raw quote or control character that
+// Strings `JSON.parse` decodes exactly like the manual decoder below: only
+// the escapes both formats share, and no raw quote or control character that
 // JSON would reject. Anything else (`\x3C`, `\u2028`, unknown escapes) takes
 // the manual decoder, which leaves unknown escapes untouched where JSON
 // would decode or reject them.
@@ -122,9 +79,28 @@ const JSON_COMPATIBLE =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: JSON rejects raw control characters.
   /^(?:[^"\\\x00-\x1f]|\\["\\nrbtf])*$/;
 
+const ESCAPE_SEQUENCE = /(\\\\|\\"|\\n|\\r|\\b|\\t|\\f|\\u2028|\\u2029|\\x3C)/g;
+
+function createUnescapedTable(): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const char in ESCAPED) {
+    result[ESCAPED[char] as string] = char;
+  }
+  return result;
+}
+
+// `ESCAPED` inverted; only reached through `ESCAPE_SEQUENCE`, whose every
+// match is a key.
+const UNESCAPED = /* @__PURE__ */ createUnescapedTable();
+
+function deserializeReplacer(str: string): string {
+  return UNESCAPED[str];
+}
+
 export function deserializeString(str: string): string {
   if (typeof str !== 'string') {
-    // Preserve the TypeError the replace call raised for malformed nodes.
+    // Some node fields reach here without String coercion; they still go
+    // through `replace` so boxed strings and replace-alikes keep working.
     return (str as string).replace(ESCAPE_SEQUENCE, deserializeReplacer);
   }
   let index = str.indexOf('\\');
@@ -134,8 +110,8 @@ export function deserializeString(str: string): string {
   if (JSON_COMPATIBLE.test(str)) {
     return JSON.parse('"' + str + '"') as string;
   }
-  // Same rewrite as `str.replace(ESCAPE_SEQUENCE, deserializeReplacer)`
-  // without the per-match callback, which dominates decoding time.
+  // Rewrites each escape `ESCAPED` produces back to its character, and
+  // leaves anything else literal, without a per-match `replace` callback.
   let result = '';
   let lastPos = 0;
   const last = str.length - 1;
